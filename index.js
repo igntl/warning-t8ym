@@ -1,14 +1,14 @@
-import { Client, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, PermissionsBitField } from 'discord.js';
+import { Client, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder } from 'discord.js';
 import schedule from 'node-schedule';
 
 const TOKEN = process.env.TOKEN;
 
-// 📌 IDs
+// 📌 IDs (كما هي تماماً بدون تغيير)
 const LOG_CHANNEL = "1527120241212133386";
 const ALLOWED_ROLES = ["1477108715290362096"];
 const ACTIVE_CHANNEL = "1527120241212133386";
 
-// ⚡ الإنذارات والرتب
+// ⚡ الإنذارات والرتب (كما هي تماماً بدون تغيير)
 const ROLES = {
   verbal: { id: "1527556605065953352", name: "انذار شفهي", duration: 3 * 24 * 60 * 60 * 1000 },
   warn1: { id: "1527121297828610089", name: "انذار أول", duration: 14 * 24 * 60 * 60 * 1000 },
@@ -22,26 +22,37 @@ const ROLES = {
 const temp = new Map();
 const activeWarnings = new Map(); // لتخزين الإنذارات الحالية
 
+// تم الحفاظ على الصلاحيات وإضافة الحزم المطلوبة لعمل البوت بشكل مستقر
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+  intents: [
+    GatewayIntentBits.Guilds, 
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildModeration
+  ]
 });
 
 client.once("ready", async () => {
   console.log("Bot Ready");
 
-  const cmd = new SlashCommandBuilder()
-    .setName("عقوبات")
-    .setDescription("لوحة الانذارات")
-    .addUserOption(o => o.setName("الشخص").setDescription("اختر الشخص").setRequired(true));
+  try {
+    const cmd = new SlashCommandBuilder()
+      .setName("عقوبات")
+      .setDescription("لوحة الانذارات")
+      .addUserOption(o => o.setName("الشخص").setDescription("اختر الشخص").setRequired(true));
 
-  const checkCmd = new SlashCommandBuilder()
-    .setName("فحص")
-    .setDescription("عرض الأشخاص الذين عليهم إنذارات");
+    const checkCmd = new SlashCommandBuilder()
+      .setName("فحص")
+      .setDescription("عرض الأشخاص الذين عليهم إنذارات");
 
-  await client.application.commands.set([cmd, checkCmd]);
+    await client.application.commands.set([cmd, checkCmd]);
+    console.log("Commands registered successfully!");
+  } catch (error) {
+    console.error("Error registering commands:", error);
+  }
 });
 
 client.on("interactionCreate", async (interaction) => {
+  // التأكد من أن التفاعل يتم في الروم المحدد فقط
   if (interaction.channelId !== ACTIVE_CHANNEL) return;
 
   // أمر فحص
@@ -76,7 +87,9 @@ client.on("interactionCreate", async (interaction) => {
     if (!hasRole) return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
 
     const user = interaction.options.getUser("الشخص");
-    temp.set(interaction.user.id, { target: user.id });
+    
+    // [إصلاح] إنشاء الكائن داخل الـ Map أولاً لتفادي توقف البوت
+    temp.set(interaction.user.id, { target: user.id, type: null, duration: null });
 
     const menu = new StringSelectMenuBuilder()
       .setCustomId("types")
@@ -88,6 +101,8 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.isStringSelectMenu() && interaction.customId === "types") {
     const data = temp.get(interaction.user.id);
+    if (!data) return interaction.reply({ content: "❌ انتهت الجلسة، اعد كتابة الأمر.", ephemeral: true });
+    
     data.type = interaction.values[0];
 
     if (["verbal","warn1","warn2","warn3","test"].includes(data.type)) {
@@ -109,6 +124,8 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.isStringSelectMenu() && interaction.customId === "duration") {
     const data = temp.get(interaction.user.id);
+    if (!data) return interaction.reply({ content: "❌ انتهت الجلسة، اعد كتابة الأمر.", ephemeral: true });
+
     const val = interaction.values[0];
     if (val === "test") data.duration = ROLES.test.duration;
     else if (val === "day") data.duration = 24*60*60*1000;
@@ -121,44 +138,62 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply({ ephemeral: true });
 
     const data = temp.get(interaction.user.id);
+    if (!data) return interaction.editReply({ content: "❌ حدث خطأ في البيانات، اعد المحاولة." });
+
     const reason = interaction.fields.getTextInputValue("reason");
-    const member = await interaction.guild.members.fetch(data.target);
-    const role = interaction.guild.roles.cache.get(ROLES[data.type].id);
+    
+    try {
+      const member = await interaction.guild.members.fetch(data.target).catch(() => null);
+      if (!member) return interaction.editReply({ content: "❌ تعذر العثور على هذا الشخص في السيرفر." });
 
-    if (role) await member.roles.add(role);
+      const role = interaction.guild.roles.cache.get(ROLES[data.type].id);
+      if (role) await member.roles.add(role);
 
-    const now = Date.now();
-    const endTime = data.duration ? now + data.duration : null;
-    activeWarnings.set(member.id, { typeName: ROLES[data.type].name, endTime });
+      const now = Date.now();
+      const endTime = data.duration ? now + data.duration : null;
+      activeWarnings.set(member.id, { typeName: ROLES[data.type].name, endTime });
 
-    const embed = new EmbedBuilder()
-      .setTitle("🚨 تم إعطاء عقوبة")
-      .setColor(0xFF4C4C)
-      .addFields(
-        { name: "👤 المستخدم", value: `<@${member.id}>`, inline: true },
-        { name: "👮 الإداري", value: `<@${interaction.user.id}>`, inline: true },
-        { name: "📋 العقوبة", value: ROLES[data.type].name },
-        { name: "⏱ المدة", value: data.duration ? getReadableDuration(data.duration) : "دائم", inline: true },
-        { name: "📝 السبب", value: reason }
-      )
-      .setTimestamp();
+      const embed = new EmbedBuilder()
+        .setTitle("🚨 تم إعطاء عقوبة")
+        .setColor(0xFF4C4C)
+        .addFields(
+          { name: "👤 المستخدم", value: `<@${member.id}>`, inline: true },
+          { name: "👮 الإداري", value: `<@${interaction.user.id}>`, inline: true },
+          { name: "📋 العقوبة", value: ROLES[data.type].name },
+          { name: "⏱ المدة", value: data.duration ? getReadableDuration(data.duration) : "دائم", inline: true },
+          { name: "📝 السبب", value: reason }
+        )
+        .setTimestamp();
 
-    const log = interaction.guild.channels.cache.get(LOG_CHANNEL);
-    if (log) log.send({ embeds: [embed] });
+      const log = interaction.guild.channels.cache.get(LOG_CHANNEL);
+      if (log) await log.send({ embeds: [embed] });
 
-    if (data.duration) {
-      schedule.scheduleJob(Date.now() + data.duration, async () => {
-        if (role && member.roles.cache.has(role.id)) await member.roles.remove(role);
-        if (log) log.messages.fetch({ limit: 50 }).then(msgs => {
-          const message = msgs.find(m => m.embeds[0]?.title === "🚨 تم إعطاء عقوبة" && m.embeds[0].data.fields[0].value.includes(member.id));
-          if (message) message.delete().catch(() => {});
+      if (data.duration) {
+        schedule.scheduleJob(Date.now() + data.duration, async () => {
+          try {
+            const freshMember = await interaction.guild.members.fetch(data.target).catch(() => null);
+            if (role && freshMember && freshMember.roles.cache.has(role.id)) {
+              await freshMember.roles.remove(role);
+            }
+            if (log) {
+              const msgs = await log.messages.fetch({ limit: 50 });
+              const message = msgs.find(m => m.embeds[0]?.title === "🚨 تم إعطاء عقوبة" && m.embeds[0].data.fields[0].value.includes(freshMember.id));
+              if (message) await message.delete().catch(() => {});
+            }
+          } catch (e) {
+            console.error("Error in scheduled job:", e);
+          }
+          activeWarnings.delete(data.target);
         });
-        activeWarnings.delete(member.id);
-      });
-    }
+      }
 
-    await interaction.editReply({ content: "✅ تم تنفيذ العقوبة" });
-    temp.delete(interaction.user.id);
+      await interaction.editReply({ content: "✅ تم تنفيذ العقوبة" });
+    } catch (err) {
+      console.error(err);
+      await interaction.editReply({ content: "❌ حدث خطأ أثناء تنفيذ العقوبة أو إضافة الرتبة." });
+    } finally {
+      temp.delete(interaction.user.id);
+    }
   }
 });
 
